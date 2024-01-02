@@ -1,0 +1,87 @@
+---
+title: "Module Scoring"
+author: "Vivian Lau"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r }
+library(knitr)
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(fgsea)
+library(msigdbr)
+library(ggrepel)
+library(biomaRt)
+library(readr)
+library(babelgene)
+library(RColorBrewer)
+dataset <- readRDS("~/Documents/Bioinformatics/sc_analysis_2/Rds/dataset.rds")
+Myeloid <- readRDS("~/Documents/Bioinformatics/sc_analysis_2/Rds/Myeloid.rds")
+
+ISGs <- read_csv("~/OneDrive - Nexus365/Oxford/IITM/DPhil Data/Thesis/Results Chapter 3/ISGs.csv")
+ISG_10 <- list(c("Ifng","Stat1","Cxcl9","Cxcl10","Cxcl11","H2-Eb1","Gzma","Prf1","Ido1","Ccr5","H2-Ab1"))
+
+
+```
+
+```{r}
+ISG_RS <- as.vector(ISGs$ISG.RS)
+ISG_GS <- as.vector(ISGs$ISG.GS)
+
+ISG_10
+
+ISG_RS <- orthologs(genes = ISG_RS, species = "house mouse", human = TRUE)
+ISG_RS <- list(ISG_RS$symbol)
+
+ISG_GS <- orthologs(genes = ISG_GS, species = "house mouse", human = TRUE)
+ISG_GS <- list(ISG_GS$symbol)
+```
+
+
+```{r}
+dataset <- AddModuleScore(dataset, features = ISG_RS, name = "ISG_RS")
+dataset <- AddModuleScore(dataset, features = ISG_GS, name = "ISG_GS")
+dataset <- AddModuleScore(dataset, features = ISG_10, name = "ISG_10")
+Myeloid <- AddModuleScore(Myeloid, features = ISG_10, name = "ISG_10")
+
+
+FeaturePlot(dataset,
+            features = "ISG_RS1", label = TRUE, repel = TRUE, split.by = "model", keep.scale = "all")
+
+FeaturePlot(dataset,
+            features = "ISG_GS1", label = TRUE, repel = TRUE, split.by = "model", keep.scale = "all")
+
+library(viridis)
+library(scCustomize)
+
+
+Idents(Myeloid) <- "model"
+Myeloid_WT <- subset(Myeloid, idents = c("WT"))
+Myeloid_KO <- subset(Myeloid, idents = c("KO"))
+
+pal <- viridis(n = 10, option = "D")
+
+Idents(Myeloid_WT) <- "cluster_name"
+
+FeaturePlot_scCustom(Myeloid_WT,
+            features = "ISG_101", order = T, na_cutoff = 0, colors_use = pal) + xlim(-10,8) + ylim(-15,8)
+FeaturePlot_scCustom(Myeloid_KO,
+            features = "ISG_101", order = T, na_cutoff = 0, colors_use = pal) + xlim(-10,8) + ylim(-15,8)
+
+FeaturePlot_scCustom(dataset,
+            features = "ISG_101", order = T, na_cutoff = 0.3, colors_use = pal, split.by = "model",pt.size=0.2)
+ggsave("./graphics/ISG_10_FeaturePlot.png",height=3,width=6)
+
+DimPlot(dataset, pt.size = 0.1) + NoLegend()
+
+```
+
+

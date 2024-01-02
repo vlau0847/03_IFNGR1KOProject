@@ -1,0 +1,145 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r, proportions graphing}
+library(knitr)
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(scCustomize)
+dataset <- readRDS("~/Documents/Bioinformatics/sc_analysis_2/Rds/dataset.rds")
+DimPlot(dataset, label = T)
+Lymphocytes <- readRDS("~/Documents/Bioinformatics/sc_analysis_2/Rds/Lymphocytes.rds")
+Idents(Lymphocytes) <- "model"
+WT <- subset(Lymphocytes, ident = "WT")
+KO <- subset(Lymphocytes, ident = "KO")
+
+Idents(WT) <- "cluster_name"
+Idents(KO) <- "cluster_name"
+
+
+WT_proportions <- WT %>% Idents() %>% table() %>% as.data.frame()
+KO_proportions <- KO %>% Idents() %>% table() %>% as.data.frame()
+joint_proportions <- merge(WT_proportions,KO_proportions, by = ".")
+
+names(joint_proportions)[1] <- "Cluster"
+names(joint_proportions)[2] <- "WT"
+names(joint_proportions)[3] <- "KO"
+joint_proportions <- joint_proportions %>% column_to_rownames(var = "Cluster")
+
+#proportional graphing for lymphoid cells
+cluster_proportions <-t(joint_proportions)
+cluster_proportions <- as.data.frame(cluster_proportions) %>% rownames_to_column(var = "model") %>% pivot_longer(!model, names_to = "cluster", values_to = "frequency")
+
+cluster_proportions$model <- factor(cluster_proportions$model,levels = c("WT", "KO"))
+cluster_proportions$cluster <- factor(cluster_proportions$cluster,levels = c("B cells", "NK cells", "CD4 Foxp3 Tregs", "CD8 T cells", "Stem-like T cells", "Cycling"))
+
+cluster_proportions <- cluster_proportions %>%
+  group_by(model) %>%
+  mutate(label = (frequency / sum(frequency))*100) %>%
+  mutate(label = round(label, 1))
+
+ggplot(cluster_proportions, aes(y=frequency, x=model, fill=cluster)) +
+  geom_bar(position = "fill", stat = "identity")+
+  geom_text(aes(label = label), position = position_fill(vjust = 0.5),size = 3, colour = "white") +
+  ylab("Frequency") +  scale_fill_manual(values=c("#F066A5", "#28B34B", "#7095CD", "#B59F31", "#2DB888", "#7CAF41")) + NoLegend() + xlab("")
+
+ggsave("../graphics/lymphocyte_proportions_labelled.png",height=4,width=2)
+
+
+ggplot(cluster_proportions, aes(y=frequency, x=model, fill=cluster)) +
+  geom_bar(position = "fill", stat = "identity")+
+  ylab("Frequency") +  scale_fill_manual(values=c("#F066A5", "#28B34B", "#7095CD", "#B59F31", "#2DB888", "#7CAF41")) + NoLegend() + xlab("")
+
+ggsave("../graphics/lymphocyte_proportions_nolabel.png",height=4,width=2)
+
+
+```
+
+```{r}
+Myeloid <- readRDS("~/Documents/Bioinformatics/sc_analysis_2/Rds/Myeloid.rds")
+Idents(Myeloid) <- "cluster_name"
+
+Myeloid <- RenameIdents(Myeloid, 'Macrophage 1' = "Monocytes", 'Macrophage 2' = "MonoMacs/Macrophages")
+Myeloid <- StashIdent(Myeloid, "cluster_name")
+Myeloid <- subset(Myeloid, idents = c("Monocytes","MonoMacs/Macrophages","cDC1","cDC2","mReg DCs","Plasmacytoid DCs"))
+
+Idents(Myeloid) <- "model"
+Myeloid_WT <- subset(Myeloid, ident = "WT")
+Myeloid_KO <- subset(Myeloid, ident = "KO")
+
+Idents(Myeloid_WT) <- "cluster_name"
+Idents(Myeloid_KO) <- "cluster_name"
+
+
+Myeloid_WT_proportions <- Myeloid_WT %>% Idents() %>% table() %>% as.data.frame()
+Myeloid_KO_proportions <- Myeloid_KO %>% Idents() %>% table() %>% as.data.frame()
+Myeloid_joint_proportions <- merge(Myeloid_WT_proportions,Myeloid_KO_proportions, by = ".")
+
+names(Myeloid_joint_proportions)[1] <- "Cluster"
+names(Myeloid_joint_proportions)[2] <- "WT"
+names(Myeloid_joint_proportions)[3] <- "KO"
+Myeloid_joint_proportions <- Myeloid_joint_proportions %>% column_to_rownames(var = "Cluster")
+
+#proportional graphing for lymphoid cells
+Myeloid_cluster_proportions <-t(Myeloid_joint_proportions)
+Myeloid_cluster_proportions <- as.data.frame(Myeloid_cluster_proportions) %>% rownames_to_column(var = "model") %>% pivot_longer(!model, names_to = "cluster", values_to = "frequency")
+
+Myeloid_cluster_proportions$model <- factor(Myeloid_cluster_proportions$model,levels = c("WT", "KO"))
+Myeloid_cluster_proportions$cluster <- factor(Myeloid_cluster_proportions$cluster,levels = c("cDC1", "cDC2", "Monocytes", "MonoMacs/Macrophages", "mReg DCs","Plasmacytoid DCs"))
+
+Myeloid_cluster_proportions <- Myeloid_cluster_proportions %>%
+  group_by(model) %>%
+  mutate(label = (frequency / sum(frequency))*100) %>%
+  mutate(label = round(label, 1))
+
+ggplot(Myeloid_cluster_proportions, aes(y=frequency, x=model, fill=cluster)) +
+  geom_bar(position = "fill", stat = "identity")+
+  geom_text(aes(label = label), position = position_fill(vjust = 0.5),size = 3, colour = "white") +
+  ylab("Frequency") +  scale_fill_manual(values=c("#A780BA", "#27B2E7", "#F3766E", "#DD8D27", "#19BDC2", "#CD71AD")) + NoLegend() + xlab("")
+
+ggsave("../graphics/myeloid_proportions_labelled.png",height=4,width=2)
+
+ggplot(Myeloid_cluster_proportions, aes(y=frequency, x=model, fill=cluster)) +
+  geom_bar(position = "fill", stat = "identity")+
+  ylab("Frequency") +  scale_fill_manual(values=c("#A780BA", "#27B2E7", "#F3766E", "#DD8D27", "#19BDC2", "#CD71AD")) + NoLegend() + xlab("")
+
+ggsave("../graphics/myeloid_proportions_nolabel.png",height=4,width=2)
+
+
+```
+
+```{r}
+FeaturePlot_scCustom(dataset, features = c("Ccr2"), order = T, na_cutoff = 1, colors_use = pal)
+```
+
+```{r}
+library(viridis)
+dataset.markers <- FindAllMarkers(dataset, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox") 
+top_10_markers <- dataset.markers %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 10, wt = avg_log2FC)
+top_10_markers
+top_8_markers <- dataset.markers %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 8, wt = avg_log2FC)
+top_8_markeßrs
+
+dataset_heatmap <- DoHeatmap(dataset, features = top_8_markers$gene, disp.min = 0, size = 2,angle=25) + scale_fill_viridis() + theme(axis.text=element_text(size=4))
+
+
+library(svglite)
+svglite(filename = "heatmap.svg",width=6,height=6)
+tiff("heatmap.tiff",width=900,height=800,units="px",res=165)
+plot(dataset_heatmap)
+dev.set(dev.next())
+dev.off()
+```
+```{r}
+FeaturePlot(dataset, split.by = "model", features = "Cd68")
+```

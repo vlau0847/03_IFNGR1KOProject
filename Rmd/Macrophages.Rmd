@@ -1,0 +1,413 @@
+---
+title: "Macrophages"
+author: "Vivian Lau"
+date: "08/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(knitr)
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(biomaRt)
+library(RColorBrewer)
+library(UCell)
+library(monocle3)
+library(SeuratWrappers)
+library(fgsea)
+library(msigdbr)
+library(ggrepel)
+library(viridis)
+```   
+
+
+```{r}
+set.seed(100)
+# Load in the dataset
+dataset <- readRDS("/Users/vlau/Documents/Bioinformatics/sc_analysis_2/Rds/dataset_labeled.rds")
+print(dataset %>% Idents() %>% table())
+dataset <- RenameIdents(dataset, 'Macrophage 1' = "Monocytes/Pre-macs", 'Macrophage 2' = "Macrophages")
+dataset <- StashIdent(dataset, "cluster_name")
+dataset <- subset(dataset, idents = c("Monocytes/Pre-macs","Macrophages","CD8 T cells","Cycling","NK cells","Stem-like T cells","mReg DCs","cDC2","CD4 Foxp3 Tregs","cDC1","Plasmacytoid DCs","B cells"))
+DimPlot(dataset, group.by = "cluster_name", label = T) + NoLegend() + ggtitle("CD45+ Subsets from B16F10 Tumours")
+
+dataset_markers <- FindAllMarkers(dataset, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox") 
+dataset_markers_filt <-  dataset_markers %>%
+                 mutate(pct_diff = abs(pct.1 - pct.2)) %>%
+                 dplyr::filter(pct_diff > 0.3) %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 10, wt = abs(avg_log2FC))
+DoHeatmap(dataset, features = dataset_markers_filt$gene, assay = "RNA", slot = "scale.data", group.by = "ident") + theme(text = element_text(size = 10)) + scale_fill_distiller(palette = "YlGnBu")
+
+# #create and save this modified dataset from the original
+# saveRDS(dataset, file = "/Users/vlau/Documents/Bioinformatics/sc_analysis_2/Rds/dataset.rds")
+# dataset <- readRDS("/Users/vlau/Documents/Bioinformatics/sc_analysis_2/Rds/dataset.rds")
+```
+
+
+```{r}
+# Subset the two main macrophage clusters and re-cluster at greater depth
+Idents(dataset) <- "cluster_name"
+macrophages <- subset(dataset, idents = c("Macrophages","Monocytes/Pre-macs"))
+macrophages$model <- factor(x = macrophages$model, levels = c("WT","KO"))
+
+DefaultAssay(macrophages) <- "RNA"
+macrophages <- NormalizeData(macrophages)
+macrophages <- ScaleData(macrophages, vars.to.regress = "percent.mt")
+macrophages <- FindVariableFeatures(macrophages)
+macrophages <- RunPCA(macrophages, npcs = 20)
+macrophages <- RunUMAP(macrophages, reduction = "pca", dims = 1:10)
+DimPlot(macrophages, reduction = "pca", group.by = "model")
+DimPlot(macrophages, label = T , repel = F, label.size = 5, group.by = "cluster_name") + NoLegend() 
+
+# Find new clusters and visualize
+macrophages <- FindNeighbors(macrophages, reduction = "pca", dims = 1:10)
+macrophages <- FindClusters(macrophages, resolution = 0.6)
+
+DimPlot(macrophages, reduction = "umap", group.by = "seurat_clusters", label = T) + NoLegend() + ggtitle("Macrophage clusters")  + xlim(-5,5)
+DimPlot(macrophages, split.by = "model", group.by = "seurat_clusters",pt.size = 0.5, label = T) + ggtitle("Macrophage clusters")  + xlim(-5,5)
+
+# Ignore clusters 7 and 8 due to low cell number
+Idents(macrophages) <- "seurat_clusters"
+macrophages <- subset(macrophages, idents = c("0","1","2","3","4","5","6"))
+macrophages[["seurat_clusters"]] <- Idents(macrophages)
+DimPlot(macrophages, split.by = "model", group.by = "seurat_clusters",pt.size = 0.5, label = T) + ggtitle("Macrophage clusters")  + xlim(-5,5)
+
+# Find DEs between clusters
+macrophage_markers <- FindAllMarkers(macrophages, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox") 
+
+FeaturePlot(macrophages, features = "Trem2", split.by = "model")
+VlnPlot(macrophages,features = "Trem2", split.by = "model", split.plot = T, cols = c("#fa3f40","#56a0fb"))
+
+DimPlot(macrophages, split.by = "model", group.by = "seurat_clusters",pt.size = 0.5, label = T) + ggtitle("Macrophage clusters")  + xlim(-5,5)
+
+# #create and save this modified macrophage cluster from the original
+# saveRDS(macrophages, file = "/Users/vlau/Documents/Bioinformatics/sc_analysis_2/Rds/macrophages.rds")
+# macrophages <- readRDS("/Users/vlau/Documents/Bioinformatics/sc_analysis_2/Rds/macrophages.rds")
+```
+
+```{r, proportions graphing}
+Idents(macrophages) <- "model"
+WT <- subset(macrophages, ident = "WT")
+KO <- subset(macrophages, ident = "KO")
+
+Idents(WT) <- "seurat_clusters"
+Idents(KO) <- "seurat_clusters"
+
+
+WT_proportions <- WT %>% Idents() %>% table() %>% as.data.frame()
+KO_proportions <- KO %>% Idents() %>% table() %>% as.data.frame()
+joint_proportions <- merge(WT_proportions,KO_proportions, by = ".")
+
+joint_proportions <- joint_proportions %>% rename("." = "Cluster", "Freq.x" = "WT", "Freq.y" = "KO") %>% column_to_rownames(var = "Cluster")
+
+
+#proportional graphing for lymphoid cells
+cluster_proportions <-t(joint_proportions)
+cluster_proportions <- as.data.frame(cluster_proportions) %>% rownames_to_column(var = "model") %>% pivot_longer(!model, names_to = "cluster", values_to = "frequency")
+
+cluster_proportions$model <- factor(cluster_proportions$model,levels = c("WT", "KO"))
+cluster_proportions$cluster <- factor(cluster_proportions$cluster,levels = c("0", "1", "2", "3", "4", "5","6"))
+
+cluster_proportions <- cluster_proportions %>%
+  group_by(model) %>%
+  mutate(label = (frequency / sum(frequency))*100) %>%
+  mutate(label = round(label, 1))
+
+ggplot(cluster_proportions, aes(y=frequency, x=factor(model), fill=factor(cluster))) +
+  geom_bar(position = "fill", stat = "identity") +
+  geom_text(aes(label = label), position = position_fill(vjust = 0.5),size = 3, colour = "white") +
+  ylab("Frequency") +
+  scale_fill_manual(values=c("#F27A73", "#C49D3D", "#5BB553", "#3AB995", "#2EB6EA", "#D672AC", "#978CC2")) + NoLegend() + xlab("")
+```
+
+```{r, heatmap}
+macrophage_markers_filt2 <-  macrophage_markers %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 20, wt = abs(avg_log2FC))
+
+
+macrophage_markers_filt <-  macrophage_markers %>%
+                 mutate(pct_diff = abs(pct.1 - pct.2)) %>%
+                 dplyr::filter(pct_diff > 0.3) %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 20, wt = abs(avg_log2FC))
+print(macrophage_markers_filt, n = Inf)
+
+top_10_markers <- macrophage_markers %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 10, wt = avg_log2FC)
+
+Idents(macrophages) <- "seurat_clusters"
+DoHeatmap(macrophages, features = top_10_markers$gene, assay = "RNA", slot = "scale.data", group.by = "seurat_clusters", size = 4) + theme(text = element_text(size = 9)) 
+
+
+
+Idents(macrophages) <- "model"
+VlnPlot(macrophages, features = c("Cxcl9","Calhm6","Ccl5","Hilpda","Spp1","Arg1","Hp","Nr4a1","Il1b","Pltp","Cbr2","Selenop","Adgre1"), idents = c("WT","KO"),pt.size = 0.1, group.by = "seurat_clusters", split.by = "model", stack = T, flip = T, split.plot = T)
+
+
+#not expressed "Cd163","Il10","Lta","Ccl17","Ccl22","Ccl24","Cd80","Il6","Il12b","Il12a"
+
+VlnPlot(macrophages, features = c("H2-Aa","H2-Ab1"), idents = c("WT","KO"),pt.size = 0.1, group.by = "seurat_clusters", split.by = "model", stack = T, flip = T, split.plot = T)
+FeaturePlot(macrophages, features = "Sirpa", split.by = "model")
+FeaturePlot(macrophages, features = "Cd80", split.by = "model")
+FeaturePlot(macrophages, features = "Ccr2", label = T,split.by="model")
+
+```
+
+```{r, UCell module scoring}
+
+markers <- list()
+markers$IFN_TAMs <- c("Ccl2", "Ccl7","Ccl8","Cd274","Cxcl9","Cxcl10","Cxcl11","Ifit1","Ifit2","Ifit3","Ifitm1","Ifitm3","Il7r","Isg15","Nos2","Rsad2","Tnfsf10","Stat1")
+markers$Inflam_TAMs <- c("Cxcl1", "Cxcl2", "Cxcl3", "Cxcl5", "Cxcl8", "Ccl20","Ccl311","Il1rn","Il1b","G0s2","Inhba","Spp1")
+markers$LA_TAMs <- c("Acp5","Apoc1","Apoe","C1qa","C1qb","C1qc", "Ccl18","Ccl8", "Cd163", "Mrc1","Cd36", "Cd63","Ctsb","Ctsd","Ctsl","Cxcl9","Fabp5", "Folr2", "Gpnmb","Lgals3", "Macro", "Mrc1","Trem2")
+markers$Angio_TAMs <- c("Arg1", "Adam8", "Bnip3","Mif", "Slc2a1")
+markers$Reg_TAMs <- c("Apoe", "Arg1", "C1qa","Ccl2", "Cd63", "Clec4d","Cx3cr1", "Gpnmb","Hilpda", "Hmox1", "Il7r","Mrc1", "Pf4", "Spp1","Trem2", "Vegfa", "Itga4")
+markers$Prolif_TAMs <- c("Cdk1", "Mki67", "Stmn1","Top2a", "Tubb")
+
+macrophages <- AddModuleScore_UCell(macrophages, features = markers)
+
+signature.names <- paste0(names(markers), "_UCell")
+
+VlnPlot(macrophages, features = signature.names, group.by = "model")
+VlnPlot(macrophages, features = signature.names, group.by = "seurat_clusters")
+
+
+FeaturePlot(macrophages, reduction = "umap", features = signature.names, ncol = 3,
+    order = T)
+
+VlnPlot(macrophages, features = "Angio_TAMs_UCell", group.by = "model", cols = c("#fa3f40","#56a0fb"), combine = T) + geom_boxplot(width = 0.07, outlier.size = 0.5) + theme_classic() + theme(axis.title.x = element_blank(), axis.title.y = element_text(size = 12), axis.text = element_text(size = 12)) + labs (y = "Module Score") + NoLegend() + ggtitle("Angiogenic TAMs")
+
+VlnPlot(macrophages, features = "Reg_TAMs_UCell", group.by = "model", cols = c("#fa3f40","#56a0fb"), combine = T) + geom_boxplot(width = 0.07, outlier.size = 0.5) + theme_classic() + theme(axis.title.x = element_blank(), axis.title.y = element_text(size = 12), axis.text = element_text(size = 12)) + labs (y = "Module Score") + NoLegend() + ggtitle("Immune Regulatory TAMs")
+
+
+```
+
+```{r, plotting DEGs}
+Idents(macrophages) <- "model"
+macrophage_DEGs <- FindMarkers(macrophages, ident.1 = "WT", ident.2 = "KO", assay = "RNA", test.use = "wilcox")
+
+macrophage_DEGs_filt <- macrophage_DEGs %>%
+                rownames_to_column(var = "gene") %>%
+                 as.tibble() %>%
+                dplyr::filter(-log10(p_val_adj) > 12.5) %>%
+                dplyr::filter(abs(avg_log2FC) > 0.5)
+
+ggplot(data=macrophage_DEGs, aes(x=avg_log2FC, y=-log10(p_val_adj))) + 
+  geom_point(size = 1) + ggtitle("Macrophages") + 
+  geom_point(data=macrophage_DEGs_filt, colour="red", size=1) + 
+  geom_text(aes(label = ifelse(-log10(p_val_adj) > 12.5 & abs(avg_log2FC) > 0.5, as.character(macrophage_DEGs_filt$gene),'')), size=3, hjust=0, vjust=0, nudge_x = 0.05, check_overlap = T) +
+  geom_vline(color = "darkgray",linetype = 4, xintercept = 0.5) +
+  geom_vline(color = "darkgray",linetype = 4, xintercept = -0.5) +
+  geom_hline(color = "darkgray",linetype = 4, yintercept = 12.5)
+```
+
+```{r, fgsea package}
+# GSEA pathways setup
+# NOTE about GSEA: Negative enrichment in a cell type in scRNAseq data is meaningless because the FindMarkers function
+# df setup
+Hallmark_df <- msigdbr(species = "Mus musculus", category = "H")
+C7_df <- msigdbr(species = "Mus musculus", category = "C7")
+C2_df <- msigdbr(species = "Mus musculus", category = "C2")
+
+go_df <- msigdbr(species = "Mus musculus", category = "C5")
+go_bp_df <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "BP")
+go_mf_df <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "MF")
+go_cc_df <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "CC")
+
+reactome_df <- msigdbr(species = "Mus musculus", category = "C2", subcategory = "CP:REACTOME")
+kegg_df <- msigdbr(species = "Mus musculus", category = "C2", subcategory = "CP:KEGG")
+
+# pathways setup
+Hallmark_pathways <-  split(x = Hallmark_df$gene_symbol, f = Hallmark_df$gs_name)
+C7_pathways <- split(x = C7_df$gene_symbol, f = C7_df$gs_name)
+C2_pathways <- split(x = C2_df$gene_symbol, f = C2_df$gs_name)
+
+go_pathways <- split(x = go_df$gene_symbol, f = go_df$gs_name)
+gobp_pathways <- split(x = go_bp_df$gene_symbol, f = go_bp_df$gs_name)
+gomf_pathways <- split(x = go_mf_df$gene_symbol, f = go_mf_df$gs_name)
+gocc_pathways <- split(x = go_cc_df$gene_symbol, f = go_cc_df$gs_name)
+
+reactome_pathways <- split(x = reactome_df$gene_symbol, f = reactome_df$gs_name)
+kegg_pathways <- split(x = kegg_df$gene_symbol, f = kegg_df$gs_name)
+
+macrophage_ranks <- macrophage_DEGs %>%
+                 rownames_to_column(var = "gene") %>%
+                 dplyr::select(gene, avg_log2FC) %>% 
+                 deframe()
+
+
+#GSEA for Macrophages
+gseaHallmarks_Macrophage <- fgsea(pathways=Hallmark_pathways, stats=macrophage_ranks)
+gseaHallmarks_Macrophage_filt <- gseaHallmarks_Macrophage %>%
+                as.tibble() %>%
+                dplyr::filter((abs(NES)) > 1) %>% 
+                arrange(NES) %>%
+                dplyr::filter(row_number() > max(row_number()) - 10 | row_number() <= 10)
+
+ggplot(gseaHallmarks_Macrophage_filt, aes(reorder(pathway, NES), NES)) +
+  theme(axis.text.y=element_text(size=6)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Hallmark pathways for Macrophages")
+
+
+
+# Reactome gSEA
+gsea_reactome_Macrophage <- fgsea(pathways=reactome_pathways, stats=macrophage_ranks)
+gsea_reactome_Macrophage_filt <- gsea_reactome_Macrophage %>%
+                as.tibble() %>%
+                dplyr::filter((abs(NES)) > 1) %>% 
+                arrange(NES) %>%
+                dplyr::filter(row_number() > max(row_number()) - 10 | row_number() <= 10)
+
+ggplot(gsea_reactome_Macrophage_filt, aes(reorder(pathway, NES), NES)) +
+  theme(axis.text.y=element_text(size=6)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 50)) +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Reactome pathways for Macrophages")
+
+# KEGG gSEA
+gsea_kegg_Macrophage <- fgsea(pathways=kegg_pathways, stats=macrophage_ranks)
+gsea_kegg_Macrophage_filt <- gsea_kegg_Macrophage %>%
+                as.tibble() %>%
+                dplyr::filter((abs(NES)) > 1) %>% 
+                arrange(NES) %>%
+                dplyr::filter(row_number() > max(row_number()) - 10 | row_number() <= 10)
+
+ggplot(gsea_kegg_Macrophage_filt, aes(reorder(pathway, NES), NES)) +
+  theme(axis.text.y=element_text(size=6)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 50)) +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="KEGG pathways for Macrophages")
+
+# GO gSEA
+gsea_gobp_Macrophage <- fgsea(pathways=gobp_pathways, stats=macrophage_ranks,minSize = 10)
+gsea_gobp_Macrophage_filt <- gsea_gobp_Macrophage %>%
+                as.tibble() %>%
+                dplyr::filter(padj < 0.05) %>% 
+                dplyr::filter((abs(NES)) > 1) %>% 
+                arrange(NES) %>%
+                dplyr::filter(row_number() > max(row_number()) - 10 | row_number() <= 10) 
+gsea_gomf_Macrophage <- fgsea(pathways=gomf_pathways, stats=macrophage_ranks,minSize = 10)
+gsea_gomf_Macrophage_filt <- gsea_gomf_Macrophage %>%
+                as.tibble() %>%
+                dplyr::filter(padj < 0.05) %>% 
+                dplyr::filter((abs(NES)) > 1.5) %>% 
+                dplyr::arrange(padj) %>%
+                slice_head(n=30)
+gsea_gocc_Macrophage <- fgsea(pathways=gocc_pathways, stats=macrophage_ranks,minSize = 10)
+gsea_gocc_Macrophage_filt <- gsea_gocc_Macrophage %>%
+                as.tibble() %>%
+                dplyr::filter(padj < 0.05) %>% 
+                dplyr::filter((abs(NES)) > 1.5) %>% 
+                dplyr::arrange(padj) %>%
+                slice_head(n=30)
+
+ggplot(gsea_gobp_Macrophage_filt, aes(reorder(pathway, NES), NES)) +
+  theme(axis.text.y=element_text(size=6)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 50)) +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="GOBP pathways for Macrophages")
+
+ggplot(gsea_gomf_Macrophage_filt, aes(reorder(pathway, NES), NES)) +
+  theme(axis.text.y=element_text(size=6)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 50)) +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="GOMF pathways for Macrophages")
+
+ggplot(gsea_gocc_Macrophage_filt, aes(reorder(pathway, NES), NES)) +
+  theme(axis.text.y=element_text(size=6)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  scale_x_discrete(label = function(x) stringr::str_trunc(x, 50)) +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="GOCC pathways for Macrophages")
+
+VlnPlot(Myeloid, features = macs_LE_EPI_MESENC, stack = TRUE, sort = TRUE, flip = TRUE, group.by = "cluster_name", split.by = "model", split.plot = TRUE, combine = TRUE)
+```
+
+
+```{r, monocle 3 trajectory analysis}
+
+#pseudotime on the whole subset
+cds <- as.cell_data_set(macrophages)
+cds <- cluster_cells(cds, reduction_method = "UMAP", resolution=0.0025, random_seed = 22)
+cds <- learn_graph(cds, use_partition = TRUE)
+cds <- order_cells(cds, reduction_method = "UMAP")
+plot_cells(cds = cds, color_cells_by = "cluster")
+plot_cells(
+  cds = cds,
+  color_cells_by = "cluster",
+  label_branch_points = FALSE,
+  show_trajectory_graph = TRUE,
+  label_groups_by_cluster = FALSE,
+  graph_label_size = 3.5,
+  cell_size = 0.6,
+)
+```
+
+```{r}
+library(scCustomize)
+library(viridis)
+library(RColorBrewer)
+library(ComplexHeatmap)
+markers_monomac <- FindMarkers(dataset, ident.1 = "Monocytes/Pre-macs", ident.2 = "Macrophages") 
+
+markers_monomac <- markers_monomac %>% mutate(diff = abs(pct.1-pct.2))
+
+pal <- viridis(n = 10, option = "D")
+
+FeaturePlot(macrophages, features = c("Ly6c2","H2-Ab1","Nr4a1","Ifitm6","Hp","Ccl7","Ms4a7","C1qa","Adgre1","Mrc1","Cd68"),label = T, cols = rev(brewer.pal(n=11,name = "RdBu")), combine = F)
+FeaturePlot(macrophages, features = c("Ccr2","Fcgr1","Cd24","Spn","Csf1r","Cd86","Folr2","Msr1"),label = T, cols = rev(brewer.pal(n=11,name = "RdBu")),combine = F)
+FeaturePlot_scCustom(macrophages, features = c("Cd68"),label = T, order = T)
+FeaturePlot_scCustom(macrophages, features = c("Cd68"), order = T, na_cutoff = 1.8, colors_use = pal)
+FeaturePlot_scCustom(macrophages, features = c("Mrc1"), order = T, colors_use = pal, split.by = "model")
+
+
+FeaturePlot_scCustom(macrophages, features = c("Vegfa"), order = T, colors_use = pal,na_cutoff=0)
+ggsave("../graphics/Ifitm6.png",width=5,height=4)
+
+macrophage_markers_filt <-  macrophage_markers %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 6, wt = abs(avg_log2FC))
+DotPlot <- Clustered_DotPlot(macrophages, features = macrophage_markers_filt$gene, exp_color_min = -1, x_lab_rotate = F, cluster_feature=F, k=7, plot_km_elbow =F, ggplot_default_colors=T, cluster_ident=T)
+
+# png("test.png",width=900,height=800,units="px",res=165)
+
+install.packages("svglite")
+library(svglite)
+svglite(filename = "test.svg",width=9,height=9)
+draw(DotPlot)
+plot(DotPlot)
+dev.set(dev.next())
+dev.off()
+```
+
+```{r}
+# finding monocyte markers
+mono_markers <- FindMarkers(dataset, ident.1 = "Monocytes/Pre-macs")
+mac_markers <- FindMarkers(dataset, ident.1 = "Macrophages")
+```

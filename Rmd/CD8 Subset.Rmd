@@ -1,0 +1,179 @@
+---
+title: "CD8 Subsets"
+author: "Vivian Lau"
+date: "26/01/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(knitr)
+library(Seurat)
+library(tidyverse)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(biomaRt)
+library(celldex)
+library(SingleR)
+library(SingleCellExperiment)
+library(RColorBrewer)
+library(UCell)
+
+library(monocle3)
+```
+
+
+```{r, object setup}
+Lymphocytes <- readRDS("~/Documents/Bioinformatics/sc_analysis_2/Rds/Lymphocytes.rds")
+
+# subset only CD8 T cells (not Stem-like, or cycling)
+Idents(Lymphocytes) <- "cluster_name"
+CD8T <- subset(Lymphocytes, idents = "CD8 T cells")
+
+DefaultAssay(CD8T) <- "RNA"
+CD8T <- NormalizeData(CD8T)
+CD8T <- ScaleData(CD8T, vars.to.regress = "percent.mt")
+CD8T <- FindVariableFeatures(CD8T)
+CD8T <- RunPCA(CD8T, npcs = 20)
+CD8T <- RunUMAP(CD8T, reduction = "pca", dims = 1:10)
+
+CD8T <- FindNeighbors(CD8T, reduction = "pca", dims = 1:10)
+CD8T <- FindClusters(CD8T, resolution = 0.5)
+
+DimPlot(CD8T, reduction = "umap", group.by = "seurat_clusters")
+CD8T$model <- factor(x = CD8T$model, levels = c("WT","KO"))
+
+DimPlot(CD8T, reduction = "umap", group.by = "seurat_clusters", split.by = "model", label = T, label.size = 5, pt.size = 0.3) + ggtitle("CD8+ T cell Clusters") +NoLegend()
+
+Idents(CD8T) <- "model"
+CD8T_markers_WTKO <- FindMarkers(CD8T, ident.1 = "WT", ident.2 = "KO",only.pos = TRUE, logfc.threshold = 0.25, test.use = "wilcox", group.by = "model")
+CD8T_markers_KOWT <- FindMarkers(CD8T, ident.1 = "KO", ident.2 = "WT",only.pos = TRUE, logfc.threshold = 0.25, test.use = "wilcox", group.by = "model") 
+CD8T_markers_WTKO_filt <- CD8T_markers_WTKO %>%
+                          rownames_to_column(var = "gene") %>% 
+                          dplyr::filter(!grepl("Trbv|Trav", gene)) %>%
+                          top_n(n=20, wt = avg_log2FC)
+CD8T_markers_KOWT_filt <- CD8T_markers_KOWT %>%
+                          rownames_to_column(var = "gene") %>% 
+                          dplyr::filter(!grepl("Trbv|Trav", gene)) %>%
+                          top_n(n=20, wt = avg_log2FC)
+DoHeatmap(CD8T, features = c(CD8T_markers_WTKO_filt$gene,CD8T_markers_KOWT_filt$gene), group.by = "model")
+
+
+
+
+CD8T_markers_bycluster <- FindAllMarkers(CD8T, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, test.use = "wilcox") 
+top_10_markers <- CD8T_markers_bycluster %>%
+                 dplyr::filter(p_val_adj<0.05) %>%
+                 group_by(cluster) %>% 
+                 top_n(n = 10, wt = avg_log2FC)
+top_10_markers
+DoHeatmap(CD8T, features = top_10_markers$gene, group.by = "seurat_clusters") + theme(axis.title.y = element_text(size = 3)) + NoLegend()
+
+DimPlot(CD8T, reduction = "umap", group.by = "seurat_clusters", split.by = "model", label = T, label.size = 5, pt.size = 0.3) + ggtitle("CD8+ T cell Clusters") +NoLegend()
+```
+
+```{r, exhaustion scoring}
+Idents(CD8T) <- "model"
+CD8T_WT <- subset(CD8T, ident = "WT")
+CD8T_KO <- subset(CD8T, ident = "KO")
+
+Idents(CD8T_WT) <- "seurat_clusters"
+Idents(CD8T_KO) <- "seurat_clusters"
+
+exhausted <- c("Pdcd1","Lag3","Havcr2","Tigit","Ctla4","Klrg1","Prdm1")
+CD8T_WT <- AddModuleScore(CD8T_WT,features = list(exhausted),name="Exhaustion")
+CD8T_KO <- AddModuleScore(CD8T_KO,features = list(exhausted),name="Exhaustion")
+
+FeaturePlot(CD8T_WT,
+            features = "Exhaustion1", split.by = "model", label = TRUE, repel = TRUE) +
+            scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdBu")))
+FeaturePlot(CD8T_KO,
+            features = "Exhaustion1", split.by = "model", label = TRUE, repel = TRUE) +
+            scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdBu")))
+
+CD8T <- AddModuleScore(CD8T,features = list(exhausted),name="Exhaustion")
+
+FeaturePlot(CD8T,
+            features = "Exhaustion1", label = TRUE, label.size = 5) +
+            scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdBu")))
+```
+
+```{r, UCell module scoring}
+markers <- list()
+markers$exh1 <- c("Pdcd1","Lag3","Havcr2","Tigit","Ctla4","Klrg1","Prdm1")
+markers$exh2 <- c("Pdcd1","Lag3","Havcr2","Tigit","Ctla4")
+
+markers$pre_exh1 <- c("Gzma", "Gzmk", "Prf1", "Gzmf", "Nkg7","Eomes","Tox")
+
+CD8T <- AddModuleScore_UCell(CD8T, features = markers)
+signature.names <- paste0(names(markers), "_UCell")
+
+VlnPlot(CD8T, features = signature.names, group.by = "model")
+VlnPlot(CD8T, features = signature.names, group.by = "seurat_clusters")
+
+
+VlnPlot(CD8T, features = "exh1_UCell", group.by = "model", cols = c("#fa3f40","#56a0fb"), combine = T) + geom_boxplot(width = 0.07, outlier.size = 0.5) + theme_classic() + theme(axis.title.x = element_blank(), axis.title.y = element_text(size = 12), axis.text = element_text(size = 12)) + labs (y = "Module Score") + NoLegend() + ggtitle("CD8 Exhaustion Scoring")
+
+VlnPlot(CD8T, features = "pre_exh1_UCell", group.by = "model", cols = c("#fa3f40","#56a0fb"), combine = T) + geom_boxplot(width = 0.07, outlier.size = 0.5) + theme_classic() + theme(axis.title.x = element_blank(), axis.title.y = element_text(size = 12), axis.text = element_text(size = 12)) + labs (y = "Module Score") + NoLegend() + ggtitle("Transitionary CD8 Scoring")
+```
+
+
+```{r, monocle 3 trajectory analysis}
+Idents(CD8T) <- "model"
+CD8T_WT <- subset(CD8T, ident = "WT")
+CD8T_KO <- subset(CD8T, ident = "KO")
+
+#pseudotime on the whole subset
+cds <- as.cell_data_set(CD8T)
+cds <- choose_cells(cds)
+cds <- cluster_cells(cds, resolution=0.001, random_seed = 22)
+cds <- learn_graph(cds, use_partition = FALSE)
+plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE)
+
+cds <- order_cells(cds, reduction_method = "UMAP")
+
+plot_cells(
+  cds = cds,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE
+)
+
+#WT only
+cds_WT <- as.cell_data_set(CD8T_WT)
+cds_WT <- cluster_cells(cds_WT, resolution=0.001, random_seed = 22)
+cds_WT <- learn_graph(cds_WT, use_partition = FALSE)
+plot_cells(cds_WT, color_cells_by = "cluster", show_trajectory_graph = FALSE)
+
+cds_WT <- order_cells(cds_WT, reduction_method = "UMAP")
+
+pseudo_WT <- plot_cells(cds = cds_WT, color_cells_by = "pseudotime", show_trajectory_graph = TRUE, label_branch_points = FALSE
+) + ggtitle("WT tumours") + coord_fixed() 
+
+#KO only
+cds_KO <- as.cell_data_set(CD8T_KO)
+cds_KO <- choose_cells(cds_KO)
+
+cds_KO <- cluster_cells(cds_KO, resolution=0.004, random_seed = 22)
+cds_KO <- learn_graph(cds_KO, use_partition = FALSE)
+plot_cells(cds_KO, color_cells_by = "cluster", show_trajectory_graph = TRUE)
+
+cds_KO <- order_cells(cds_KO, reduction_method = "UMAP")
+
+pseudo_KO <- plot_cells(cds = cds_KO, color_cells_by = "pseudotime", show_trajectory_graph = TRUE, label_branch_points = FALSE) + ggtitle("IFNGR1KO Tumours") + coord_fixed() 
+
+facet <- plot_grid(pseudo_WT, pseudo_KO)
+title <- ggdraw() + draw_label("Pseudotime of CD8+ T cells", fontface = 'bold', x = 0, hjust = 0) +
+  theme(plot.margin = margin(0, 0, 0, 10))
+
+plot_grid(
+  title, facet,
+  ncol = 1,
+  # rel_heights values control vertical title margins
+  rel_heights = c(0.1, 1)
+)
+```
